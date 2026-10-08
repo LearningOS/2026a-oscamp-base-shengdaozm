@@ -2,8 +2,8 @@
   "schema": 1,
   "courseId": 2074,
   "repository": "LearningOS/2026a-oscamp-base-shengdaozm",
-  "commit": "7d4f1e073db8eac1c365eb78fd565b390f37a294",
-  "score": 11,
+  "commit": "366f580e989ad9c1ab182f38aba836f300ad0334",
+  "score": 19,
   "totalScore": 100,
   "exercises": [
     {
@@ -30,16 +30,16 @@
     {
       "name": "process_pipe",
       "max": 4,
-      "score": 0,
-      "status": "fail",
-      "exitCode": 101
+      "score": 4,
+      "status": "pass",
+      "exitCode": 0
     },
     {
       "name": "mem_primitives",
       "max": 4,
-      "score": 0,
-      "status": "fail",
-      "exitCode": 101
+      "score": 4,
+      "status": "pass",
+      "exitCode": 0
     },
     {
       "name": "bump_allocator",
@@ -176,9 +176,9 @@
     }
   ],
   "student": "shengdaozm",
-  "runId": "37215445586",
+  "runId": "37811367676",
   "runAttempt": "1",
   "upload": {
-    "status": "accepted"
+    "status": "pending"
   }
 }
