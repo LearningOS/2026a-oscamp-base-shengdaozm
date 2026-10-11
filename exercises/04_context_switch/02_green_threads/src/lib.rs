@@ -137,7 +137,20 @@ impl Scheduler {
     ///    `sp` must be 16-byte aligned (e.g. `(stack_top - 16) & !15` to leave headroom).
     /// 3. Push a `GreenThread` with this context, state `Ready`, and `entry` stored for the wrapper to call.
     pub fn spawn(&mut self, entry: extern "C" fn()) {
-        todo!("alloc stack, init ctx with ra=thread_wrapper and aligned sp, push GreenThread(Ready, entry)")
+        let stack = vec![0; STACK_SIZE];
+        // stack_top must be the actual high address of the allocated buffer.
+        let stack_top = stack.as_ptr() as u64 + STACK_SIZE as u64;
+        let mut ctx = TaskContext::default();
+        ctx.ra = thread_wrapper as *const () as u64;
+        // Leave 16 bytes of headroom and 16-byte align for the RISC-V ABI.
+        ctx.sp = (stack_top - 16) & !15;
+        let thread = GreenThread {
+            ctx,
+            state: ThreadState::Ready,
+            _stack: Some(stack),
+            entry: Some(entry),
+        };
+        self.threads.push(thread);
     }
 
     /// Run the scheduler until all threads (except the main one) are `Finished`.
@@ -146,21 +159,62 @@ impl Scheduler {
     /// 2. Loop: if all threads in `threads[1..]` are `Finished`, break; otherwise call `schedule_next()` (which may switch away and later return).
     /// 3. Clear `SCHEDULER` when done.
     pub fn run(&mut self) {
-        todo!("set SCHEDULER to self, loop until threads[1..] all Finished, call schedule_next, then clear SCHEDULER")
+        // Publish a global pointer so that `yield_now`/`thread_finished` (which run on a
+        // green thread's own stack, not as a method of `self`) can call back into this scheduler.
+        unsafe { SCHEDULER = self as *mut Scheduler };
+        loop {
+            // Only the green threads (threads[1..]) can finish; the main thread
+            // never does, so exclude it from the termination check.
+            if self.threads[1..].iter().all(|t| t.state == ThreadState::Finished) {
+                break;
+            }
+            self.schedule_next();
+        }
+        unsafe { SCHEDULER = std::ptr::null_mut() };
     }
 
-    /// Find the next ready thread (starting from `current + 1` round-robin), mark current as `Ready` (if not `Finished`), mark next as `Running`, set `CURRENT_THREAD_ENTRY` if the next thread has an entry, then switch to it.
+    /// Switch the currently running thread to thread `next`:
+    /// - only demote the previously running thread if it is still `Running` (a `Finished`
+    ///   thread must NOT be resurrected);
+    /// - mark `next` as `Running`;
+    /// - publish its entry to `CURRENT_THREAD_ENTRY` for `thread_wrapper`;
+    /// - perform the context switch.
+    ///
+    /// We take raw pointers to the two `TaskContext`s first, because borrowing the same
+    /// `Vec` mutably and immutably simultaneously (old + new) is rejected by the borrow checker.
+    fn switch_to(&mut self, next: usize) {
+        let prev = self.current;
+        // Do not resurrect a finished thread: only a running (yielded) thread goes back to Ready.
+        if self.threads[prev].state == ThreadState::Running {
+            self.threads[prev].state = ThreadState::Ready;
+        }
+        self.current = next;
+        self.threads[next].state = ThreadState::Running;
+        if let Some(entry) = self.threads[next].entry {
+            unsafe { CURRENT_THREAD_ENTRY = Some(entry) };
+        }
+        let old_ptr = &mut self.threads[prev].ctx as *mut TaskContext;
+        let new_ptr = &self.threads[next].ctx as *const TaskContext;
+        unsafe { switch_context(&mut *old_ptr, &*new_ptr) };
+    }
+
+    /// Find the next ready thread (round-robin, starting after `current`, then wrapping to 0),
+    /// then switch to it.
     fn schedule_next(&mut self) {
-        todo!("round-robin find next Ready, set current Ready (if not Finished), next Running, CURRENT_THREAD_ENTRY, then switch_context")
-    }
-}
-
-impl TaskContext {
-    fn as_mut_ptr(&mut self) -> *mut TaskContext {
-        self as *mut TaskContext
-    }
-    fn as_ptr(&self) -> *const TaskContext {
-        self as *const TaskContext
+        let n = self.threads.len();
+        let start = self.current;
+        for i in (start + 1)..n {
+            if self.threads[i].state == ThreadState::Ready {
+                self.switch_to(i);
+                return;
+            }
+        }
+        for i in 0..start {
+            if self.threads[i].state == ThreadState::Ready {
+                self.switch_to(i);
+                return;
+            }
+        }
     }
 }
 
