@@ -16,7 +16,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(unused_variables)]
 
-use core::ptr::null;
+// use core::ptr::null;
 
 /// Copy `n` bytes from `src` to `dst`.
 ///

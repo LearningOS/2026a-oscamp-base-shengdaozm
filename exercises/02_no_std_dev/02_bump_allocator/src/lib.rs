@@ -31,6 +31,13 @@
 
 #![cfg_attr(not(test), no_std)]
 
+/*
+global_alloc-全局分配器,需要实现alloc和dealloc
+layout-内存布局描述=size+align
+atomic_usize-并发安全的usize
+ordering- 内存序
+*/
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -63,22 +70,50 @@ impl BumpAllocator {
 
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // TODO: Implement bump allocation
-        //
-        // Steps:
-        // 1. Load current next (use Ordering::SeqCst)
-        // 2. Align next up to layout.align()
-        //    Hint: align_up(addr, align) = (addr + align - 1) & !(align - 1)
-        // 3. Compute allocation end = aligned + layout.size()
-        // 4. If end > heap_end, return null_mut()
-        // 5. Atomically update next to end using compare_exchange
-        //    (if CAS fails, another thread raced — retry in a loop)
-        // 6. Return the aligned address as a pointer
-        todo!()
+        loop {
+            // 1. Load current next
+            let current = self.next.load(Ordering::SeqCst);
+            // 2. Align up to layout.align()
+            let align = layout.align();
+            let aligned = (current + align - 1) & !(align - 1);
+            // 3. Compute allocation end
+            let end = aligned.checked_add(layout.size()).unwrap_or(usize::MAX);
+            // 4. Out of memory
+            if end > self.heap_end {
+                return null_mut();
+            }
+            // 5. Atomically update next (CAS loop to handle races)
+            match self
+                .next
+                .compare_exchange(current, end, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return aligned as *mut u8, // 分配好的首地址
+                Err(_) => continue, // another thread won the race — retry
+            }
+        }
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // Bump allocator does not reclaim individual objects — leave empty
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Bump allocator can only reclaim the most recent allocation:
+        // if `ptr` is exactly the last block (ptr + size == next), roll back `next`
+        // so the memory becomes immediately reusable. Otherwise the block is
+        // abandoned (freed only on `reset`).
+        let end = ptr as usize + layout.size();
+        let mut current = self.next.load(Ordering::SeqCst);
+        loop {
+            if current != end {
+                return; // not the last allocation — nothing to do
+            }
+            match self.next.compare_exchange(
+                current,
+                ptr as usize,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual, // raced with another alloc — retry
+            }
+        }
     }
 }
 
