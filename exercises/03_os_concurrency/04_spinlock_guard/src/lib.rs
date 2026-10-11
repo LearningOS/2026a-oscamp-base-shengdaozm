@@ -39,9 +39,16 @@ impl<T> SpinLock<T> {
     ///
     /// TODO: Spin-wait to acquire lock (compare_exchange), return SpinGuard on success.
     pub fn lock(&self) -> SpinGuard<'_, T> {
-        // TODO: Spin-wait to acquire lock
-        // TODO: Return SpinGuard { lock: self }
-        todo!()
+        loop {
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return SpinGuard { lock: self };
+            }
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -51,7 +58,8 @@ impl<T> Deref for SpinGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        todo!()
+        // SAFETY: the guard holds the lock, so we have shared access to the data.
+        unsafe { &*self.lock.data.get() }
     }
 }
 
@@ -59,7 +67,8 @@ impl<T> Deref for SpinGuard<'_, T> {
 // Return &mut T
 impl<T> DerefMut for SpinGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        todo!()
+        // SAFETY: the guard holds the lock, so we have exclusive access to the data.
+        unsafe { &mut *self.lock.data.get() }
     }
 }
 
@@ -67,7 +76,8 @@ impl<T> DerefMut for SpinGuard<'_, T> {
 // Set lock.locked to false (Release ordering)
 impl<T> Drop for SpinGuard<'_, T> {
     fn drop(&mut self) {
-        todo!()
+        // 用release和一开始acquire的顺序来保证
+        self.lock.locked.store(false, Ordering::Release);
     }
 }
 

@@ -40,23 +40,31 @@ impl<T> SpinLock<T> {
     /// # Safety
     /// Caller must ensure `unlock` is called after using the data.
     pub fn lock(&self) -> &mut T {
-        // TODO
-        todo!()
+        loop {
+            if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                // SAFETY: we just acquired the lock, so we hold exclusive access to the data.
+                return unsafe { &mut *self.data.get() };
+            }
+            core::hint::spin_loop();
+        }
     }
 
     /// Release lock.
     ///
     /// TODO: Set locked to false (using Release ordering)
     pub fn unlock(&self) {
-        // TODO
-        todo!()
+        self.locked.store(false, Ordering::Release);
     }
 
     /// Try to acquire lock without spinning.
     /// Returns Some(&mut T) on success, None if lock is busy.
     pub fn try_lock(&self) -> Option<&mut T> {
-        // TODO: Single compare_exchange attempt
-        todo!()
+        if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            // Dereference the raw pointer into a mutable borrow (same as lock()).
+            // SAFETY: the compare_exchange above succeeded, so we hold the lock.
+            return Some(unsafe { &mut *self.data.get() });
+        }
+        None
     }
 }
 

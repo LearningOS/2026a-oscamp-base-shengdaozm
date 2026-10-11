@@ -40,7 +40,9 @@ impl FlagChannel {
     pub fn produce(&self, value: u32) {
         // TODO: Store data (choose appropriate Ordering)
         // TODO: Set ready = true (choose appropriate Ordering so data writes complete before this)
-        todo!()
+        self.data.store(value, Ordering::Relaxed);
+        // 标记必须在数据写入后完成
+        self.ready.store(true, Ordering::Release);
     }
 
     /// Consumer: spin-wait for ready flag, then read data.
@@ -51,7 +53,12 @@ impl FlagChannel {
     pub fn consume(&self) -> u32 {
         // TODO: Spin-wait for ready to become true (choose appropriate Ordering)
         // TODO: Read data (choose appropriate Ordering)
-        todo!()
+        loop {
+            if self.ready.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        self.data.load(Ordering::Relaxed)
     }
 
     /// Reset channel state
@@ -81,15 +88,26 @@ impl OnceCell {
     ///
     /// Hint: use `compare_exchange` to ensure only one thread succeeds.
     pub fn init(&self, val: u32) -> bool {
-        // TODO: Use compare_exchange to ensure initialization only once
-        // Store value on success
-        todo!()
+        // compare_exchange returns Result<bool, bool>; use is_ok() to check success.
+        // Success means we were the one to flip false -> true, so we own initialization.
+        if self
+            .initialized
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.value.store(val, Ordering::SeqCst);
+            return true;
+        }
+        false
     }
 
     /// Get value. Returns Some if initialized, otherwise None.
     pub fn get(&self) -> Option<u32> {
-        // TODO: Check initialized flag, then read value
-        todo!()
+        if self.initialized.load(Ordering::SeqCst) {
+            Some(self.value.load(Ordering::SeqCst))
+        } else {
+            None
+        }
     }
 }
 
