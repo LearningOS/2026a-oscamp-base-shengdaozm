@@ -19,9 +19,14 @@ pub async fn with_timeout<F, T>(future: F, timeout_ms: u64) -> Option<T>
 where
     F: Future<Output = T>,
 {
-    // TODO: Use tokio::select! to race between future and sleep
-    // Or use tokio::time::timeout
-    todo!()
+    // Pin the future so we can poll it through `select!` even if it isn't `Unpin`.
+    tokio::pin!(future);
+    tokio::select! {
+        // The future finished first -> return its value.
+        value = future => Some(value),
+        // The timeout elapsed first -> return None.
+        _ = sleep(Duration::from_millis(timeout_ms)) => None,
+    }
 }
 
 /// Race two async tasks, return the result of whichever finishes first.
@@ -32,9 +37,14 @@ where
     F1: Future<Output = T>,
     F2: Future<Output = T>,
 {
-    // TODO: Use tokio::select! to wait for f1 and f2
-    // Return the result of whichever completes first
-    todo!()
+    // Pin both futures so `select!` can poll them even when not `Unpin`.
+    tokio::pin!(f1);
+    tokio::pin!(f2);
+    tokio::select! {
+        // Whichever branch completes first wins; the other is dropped.
+        v = f1 => v,
+        v = f2 => v,
+    }
 }
 
 #[cfg(test)]

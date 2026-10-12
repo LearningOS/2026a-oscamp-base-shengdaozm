@@ -102,8 +102,8 @@ impl Sv39PageTable {
     ///
     /// 提示：右移 (12 + level * 9) 位，然后与 0x1FF 做掩码。
     pub fn extract_vpn(va: u64, level: usize) -> usize {
-        // TODO: 从虚拟地址中提取指定级别的 VPN 索引
-        todo!()
+        // 右移 (12 + level*9) 位去掉更低级别与页内偏移，再取低 9 位作为 VPN 索引。
+        ((va >> (12 + level * 9)) & 0x1FF) as usize
     }
 
     /// 建立从虚拟页到物理页的映射（4KB 页）。
@@ -113,13 +113,20 @@ impl Sv39PageTable {
     /// - `pa`: 物理地址（会自动对齐到页边界）
     /// - `flags`: 标志位（如 PTE_V | PTE_R | PTE_W）
     pub fn map_page(&mut self, va: u64, pa: u64, flags: u64) {
-        // TODO: 实现三级页表的映射
-        //
-        // 提示：你需要从根页表开始，逐级向下遍历页表层级（level 2 → level 1 → level 0）。
-        // 对于中间层级（level 2 和 level 1），如果对应 VPN 的页表项（PTE）无效（PTE_V == 0），
-        // 则需要分配一个新的页表节点（使用 alloc_node），并将新节点的 PPN 写入当前 PTE（仅设置 PTE_V 标志）。
-        // 最后在 level 0 的 PTE 中写入目标物理页号（pa >> 12）和 flags。
-        todo!()
+        let mut ppn = self.root_ppn;
+        // Walk levels 2 and 1, allocating an intermediate page-table node when needed.
+        for level in [2, 1] {
+            let idx = Sv39PageTable::extract_vpn(va, level);
+            let pte = self.nodes[&ppn].entries[idx];
+            if pte & PTE_V == 0 {
+                let new_ppn = self.alloc_node();
+                self.nodes.get_mut(&ppn).unwrap().entries[idx] = (new_ppn << PPN_SHIFT) | PTE_V;
+            }
+            ppn = self.nodes[&ppn].entries[idx] >> PPN_SHIFT;
+        }
+        // Leaf (level 0): store the target physical page frame plus the flags.
+        let idx = Sv39PageTable::extract_vpn(va, 0);
+        self.nodes.get_mut(&ppn).unwrap().entries[idx] = ((pa >> 12) << PPN_SHIFT) | flags;
     }
 
     /// 遍历三级页表，将虚拟地址翻译为物理地址。
@@ -133,15 +140,26 @@ impl Sv39PageTable {
     ///    d. 否则用 PTE 中的 PPN 进入下一级页表
     /// 3. level 0 的 PTE 必须是叶节点
     pub fn translate(&self, va: u64) -> TranslateResult {
-        // TODO: 实现三级页表遍历
-        //
-        // 提示：你需要从根页表开始，按 level 2 → level 1 → level 0 的顺序逐级遍历。
-        // 每一级都需要通过 VPN[level] 索引当前页表节点的条目（PTE）。
-        // 如果 PTE 无效（PTE_V == 0）则产生页错误（PageFault）。
-        // 如果 PTE 是叶节点（即 R、W、X 标志位中有至少一个被置位），则可以直接使用该 PTE 中的物理页号（PPN）计算最终的物理地址。
-        // 否则，该 PTE 指向下一级页表节点，继续遍历下一级。
-        // 遍历到 level 0 时，PTE 必须是叶节点。
-        todo!()
+        let mut ppn = self.root_ppn;
+        for level in [2, 1, 0] {
+            let idx = Sv39PageTable::extract_vpn(va, level);
+            let pte = self.nodes[&ppn].entries[idx];
+            if pte & PTE_V == 0 {
+                return TranslateResult::PageFault;
+            }
+            // A leaf PTE has at least one of R/W/X set: it maps a page directly.
+            if pte & (PTE_R | PTE_W | PTE_X) != 0 {
+                let phys_ppn = pte >> PPN_SHIFT;
+                // A 2MB superpage leaf (level 1) covers the low 21 bits of the VA;
+                // an ordinary 4KB leaf (level 0) covers only the low 12 bits.
+                let offset_mask = if level == 1 { 0x1FFFFF } else { 0xFFF };
+                let pa = (phys_ppn << 12) | (va & offset_mask);
+                return TranslateResult::Ok(pa);
+            }
+            // Otherwise this PTE points to the next-level page table.
+            ppn = pte >> PPN_SHIFT;
+        }
+        TranslateResult::PageFault
     }
 
     /// 建立大页映射（2MB superpage，在 level 1 设叶子 PTE）。
@@ -154,13 +172,21 @@ impl Sv39PageTable {
         assert_eq!(va % mega_size, 0, "va must be 2MB-aligned");
         assert_eq!(pa % mega_size, 0, "pa must be 2MB-aligned");
 
-        // TODO: 实现大页映射
-        //
-        // 提示：大页映射与普通页映射类似，但只需要遍历到 level 1。
-        // 你需要在 level 2 找到或创建中间页表节点，然后在 level 1 写入叶子 PTE。
-        // 注意大页的物理页号计算方式与普通页相同（pa >> 12），
-        // 但翻译时 offset 包含虚拟地址的低 21 位（VPN[0] 部分 + 12 位页内偏移）。
-        todo!()
+        // Walk only to level 1 (a superpage has no level-0 table).
+        let mut ppn = self.root_ppn;
+        for level in [2] {
+            let idx = Sv39PageTable::extract_vpn(va, level);
+            let pte = self.nodes[&ppn].entries[idx];
+            if pte & PTE_V == 0 {
+                let new_ppn = self.alloc_node();
+                self.nodes.get_mut(&ppn).unwrap().entries[idx] = (new_ppn << PPN_SHIFT) | PTE_V;
+            }
+            ppn = self.nodes[&ppn].entries[idx] >> PPN_SHIFT;
+        }
+        // Leaf at level 1: the 2MB superpage's physical frame plus flags.
+        // `pa` is 2MB-aligned, so (pa >> 12) has its low 9 bits zeroed as SV39 requires.
+        let idx = Sv39PageTable::extract_vpn(va, 1);
+        self.nodes.get_mut(&ppn).unwrap().entries[idx] = ((pa >> 12) << PPN_SHIFT) | flags;
     }
 }
 
